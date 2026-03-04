@@ -19,13 +19,49 @@
     pkgs.writeShellScript "custom-bash" ''
       exec ${pkgs.bash}/bin/bash --rcfile ${bashProfile} -i
     '';
-in {
-  makeSandboxScript = profile: let
+
+  # Build common bwrap command prefix
+  mkBwrapCmd = profile: let
     args = builtins.concatStringsSep " " profile.args;
     env =
       pkgs.lib.concatStringsSep " "
       (pkgs.lib.mapAttrsToList (k: v: "--setenv ${k} ${pkgs.lib.escapeShellArg v}") profile.env);
+  in ''
+    ${pkgs.bubblewrap}/bin/bwrap \
+      --die-with-parent \
+      --unshare-all \
+      --share-net \
+      --proc /proc \
+      --dev /dev \
+      --tmpfs /tmp \
+      --dir /var \
+      --dir /run \
+      --dir /usr/bin \
+      --dir /bin \
+      --dir /etc/ssl \
+      --dir /etc/ssl/certs \
+      --ro-bind ${customResolvConf} /etc/resolv.conf \
+      --ro-bind ${customHosts} /etc/hosts \
+      --ro-bind ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-bundle.crt \
+      --symlink /etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt \
+      --symlink ${pkgs.coreutils}/bin/env /usr/bin/env \
+      --symlink ${pkgs.bash}/bin/bash /bin/sh \
+      --ro-bind /nix /nix \
+      --ro-bind /etc/passwd /etc/passwd \
+      --ro-bind /etc/group /etc/group \
+      --bind-try /home/$USER/.claude /home/$USER/.claude \
+      --bind-try /home/$USER/.claude.json /home/$USER/.claude.json \
+      ${args} \
+      --bind "$PROJECT_DIR" "/home/$USER/project" \
+      --chdir "/home/$USER/project" \
+      --setenv HOME "/home/$USER" \
+      --setenv USER $USER \
+      --setenv PATH "${pkgs.lib.makeBinPath (profile.packages ++ [claudePackage])}" \
+      ${env}'';
 
+in {
+  # Original interactive sandbox
+  makeSandboxScript = profile: let
     packagesList = builtins.concatStringsSep "," (map (pkg: "${pkgs.lib.getName pkg}") profile.packages);
     packagePrompt = concat defaultSystemPrompt "Only these programs are available in the sandbox: ${packagesList}";
 
@@ -61,38 +97,80 @@ in {
       USER="$(whoami)"
 
       echo "Starting bubblewrap sandbox in: $PROJECT_DIR"
-      exec ${pkgs.bubblewrap}/bin/bwrap \
-        --die-with-parent \
-        --unshare-all \
-        --share-net \
-        --proc /proc \
-        --dev /dev \
-        --tmpfs /tmp \
-        --dir /var \
-        --dir /run \
-        --dir /usr/bin \
-        --dir /bin \
-        --dir /etc/ssl \
-        --dir /etc/ssl/certs \
-        --ro-bind ${customResolvConf} /etc/resolv.conf \
-        --ro-bind ${customHosts} /etc/hosts \
-        --ro-bind ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-bundle.crt \
-        --symlink /etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt \
-        --symlink ${pkgs.coreutils}/bin/env /usr/bin/env \
-        --symlink ${pkgs.bash}/bin/bash /bin/sh \
-        --ro-bind /nix /nix \
-        --ro-bind /etc/passwd /etc/passwd \
-        --ro-bind /etc/group /etc/group \
-        --bind-try /home/$USER/.claude /home/$USER/.claude \
-        --bind-try /home/$USER/.claude.json /home/$USER/.claude.json \
-        ${args} \
-        --bind "$PROJECT_DIR" "/home/$USER/project" \
-        --chdir "/home/$USER/project" \
-        --setenv HOME "/home/$USER" \
-        --setenv USER $USER \
-        --setenv PATH "${pkgs.lib.makeBinPath (profile.packages ++ [claudePackage])}" \
-        ${env} \
+      exec ${mkBwrapCmd profile} \
         ${customBashScript}
+    '';
+
+    claudeWithProxy = import ../proxy {
+      inherit pkgs sandbox;
+      inherit (profile) allowList;
+    };
+  in
+    claudeWithProxy;
+
+  # New headless sandbox for RALPH loops
+  makeHeadlessSandboxScript = profile: let
+    packagesList = builtins.concatStringsSep "," (map (pkg: "${pkgs.lib.getName pkg}") profile.packages);
+    packagePrompt = concat defaultSystemPrompt "Only these programs are available in the sandbox: ${packagesList}";
+
+    systemPrompt = concat packagePrompt (profile.customPrompt or "");
+    promptFile = profile.promptFile or ".ralph-prompt";
+    outputFormat = profile.outputFormat or "text";
+
+    # Script that runs inside the sandbox
+    headlessScript = pkgs.writeShellScript "headless-claude" ''
+      set -euo pipefail
+
+      PROMPT_FILE="/home/$USER/project/${promptFile}"
+
+      if [ ! -f "$PROMPT_FILE" ]; then
+        echo "Error: Prompt file not found: ${promptFile}"
+        echo "Create ${promptFile} in your project directory with the task instructions."
+        exit 1
+      fi
+
+      PROMPT="$(cat "$PROMPT_FILE")"
+
+      ${pkgs.lib.optionalString (profile ? preStartHooks && builtins.length profile.preStartHooks > 0) ''
+        echo "Running pre-start hook(s)..."
+        ${pkgs.lib.concatStringsSep "\n" profile.preStartHooks}
+        echo "Pre-start hooks completed."
+      ''}
+
+      exec claude \
+        --dangerously-skip-permissions \
+        --disallowedTools ${pkgs.lib.escapeRegex disallowedTools} \
+        --append-system-prompt ${pkgs.lib.escapeShellArg systemPrompt} \
+        --output-format ${outputFormat} \
+        -p "$PROMPT"
+    '';
+
+    sandbox = pkgs.writeShellScript "claude-sandbox-headless" ''
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      PROJECT_DIR="$(pwd)"
+      if [ $# -gt 0 ]; then
+        PROJECT_DIR="$(realpath "$1")"
+        if [ ! -d "$PROJECT_DIR" ]; then
+          echo "Error: Directory '$1' does not exist"
+          exit 1
+        fi
+      fi
+
+      USER="$(whoami)"
+
+      # Check prompt file exists before starting sandbox
+      if [ ! -f "$PROJECT_DIR/${promptFile}" ]; then
+        echo "Error: Prompt file not found: $PROJECT_DIR/${promptFile}"
+        echo "Create ${promptFile} in your project directory with the task instructions."
+        exit 1
+      fi
+
+      echo "Starting headless bubblewrap sandbox in: $PROJECT_DIR"
+      echo "Prompt file: ${promptFile}"
+      exec ${mkBwrapCmd profile} \
+        ${headlessScript}
     '';
 
     claudeWithProxy = import ../proxy {

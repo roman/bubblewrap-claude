@@ -1,7 +1,7 @@
 {pkgs}: let
   sandbox = import ./sandbox {inherit pkgs;};
   profiles = import ./sandbox/profiles.nix {inherit pkgs;};
-  inherit (sandbox) makeSandboxScript;
+  inherit (sandbox) makeSandboxScript makeHeadlessSandboxScript;
 
   mkSandbox = profile: let
     inherit (profile) name;
@@ -27,8 +27,34 @@
         wrapProgram $out/bin/${name} --prefix PATH : ${packagePath}
       '';
     };
+
+  mkHeadlessSandbox = profile: let
+    inherit (profile) name;
+    sandboxScript = makeHeadlessSandboxScript profile;
+    packagePath = pkgs.lib.makeBinPath profile.packages;
+  in
+    pkgs.stdenv.mkDerivation {
+      inherit name;
+      pname = name;
+      meta = {
+        description = "Headless isolated environment for Claude Code (RALPH loops)";
+        homepage = "https://github.com/matgawin/bubblewrap-claude";
+        license = pkgs.lib.licenses.mit;
+        mainProgram = name;
+      };
+      buildInputs = [pkgs.makeWrapper];
+      unpackPhase = "true";
+
+      installPhase = ''
+        mkdir -p $out/bin
+        cp ${sandboxScript} $out/bin/${name}
+        chmod +x $out/bin/${name}
+        wrapProgram $out/bin/${name} --prefix PATH : ${packagePath}
+      '';
+    };
+
 in {
-  inherit makeSandboxScript mkSandbox;
+  inherit makeSandboxScript makeHeadlessSandboxScript mkSandbox mkHeadlessSandbox;
   inherit (profiles) profiles deriveProfile base;
 
   mkDevShell = {
@@ -45,6 +71,7 @@ in {
         echo "Run 'nix run' or 'nix run .#claude-sandbox [directory]' to enter the isolated environment"
         echo "  - 'nix run' uses current directory"
         echo "  - 'nix run .#claude-sandbox-<profile> [directory]' to enter sandbox with specific profile"
+        echo "  - 'nix run .#claude-headless [directory]' for headless/RALPH mode"
         ${shellHook}
       '';
     };

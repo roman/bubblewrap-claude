@@ -17,17 +17,34 @@
         };
 
         sandboxLib = import ./lib {inherit pkgs;};
+
+        # Interactive profile packages
         profilePackages =
           pkgs.lib.mapAttrs' (profileName: profile: rec {
             name = "claude-sandbox-${profileName}";
             value = sandboxLib.mkSandbox (profile // {inherit name;});
           })
           sandboxLib.profiles;
+
+        # Headless profile packages (for RALPH loops)
+        headlessProfilePackages =
+          pkgs.lib.mapAttrs' (profileName: profile: rec {
+            name = "claude-headless-${profileName}";
+            value = sandboxLib.mkHeadlessSandbox (profile // {inherit name;});
+          })
+          sandboxLib.profiles;
+
       in {
         packages =
           profilePackages
+          // headlessProfilePackages
           // rec {
+            # Interactive (default)
             claude-sandbox = sandboxLib.mkSandbox (sandboxLib.base // {name = "claude-sandbox";});
+
+            # Headless for RALPH loops
+            claude-headless = sandboxLib.mkHeadlessSandbox (sandboxLib.base // {name = "claude-headless";});
+
             default = claude-sandbox;
           };
 

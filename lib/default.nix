@@ -17,7 +17,7 @@
         license = pkgs.lib.licenses.mit;
         mainProgram = name;
       };
-      buildInputs = [pkgs.makeWrapper];
+      nativeBuildInputs = [pkgs.makeWrapper];
       unpackPhase = "true";
 
       installPhase = ''
@@ -42,7 +42,7 @@
         license = pkgs.lib.licenses.mit;
         mainProgram = name;
       };
-      buildInputs = [pkgs.makeWrapper];
+      nativeBuildInputs = [pkgs.makeWrapper];
       unpackPhase = "true";
 
       installPhase = ''

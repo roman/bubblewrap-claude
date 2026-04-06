@@ -142,6 +142,7 @@ in {
         --disallowedTools ${pkgs.lib.escapeRegex disallowedTools} \
         --append-system-prompt ${pkgs.lib.escapeShellArg systemPrompt} \
         --output-format ${outputFormat} \
+        ${pkgs.lib.optionalString (outputFormat == "stream-json") "--verbose"} \
         -p "$PROMPT"
     '';
 

@@ -62,6 +62,10 @@
     packages = (default.packages or []) ++ (profile.packages or []);
     preStartHooks = (default.preStartHooks or []) ++ (profile.preStartHooks or []);
     customPrompt = (default.customPrompt or "") + (profile.customPrompt or "");
+  } // pkgs.lib.optionalAttrs (profile ? outputFormat) {
+    inherit (profile) outputFormat;
+  } // pkgs.lib.optionalAttrs (profile ? promptFile) {
+    inherit (profile) promptFile;
   };
   fromBase = deriveProfile base;
 in {
